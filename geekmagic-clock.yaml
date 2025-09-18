@@ -55,6 +55,19 @@ globals:
     type: int
     restore_value: yes
     initial_value: '1'
+  # Scrolling forecast marquee state
+  - id: forecast_msg
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: forecast_scroll_x
+    type: int
+    restore_value: no
+    initial_value: '240'
+  - id: forecast_px_len
+    type: int
+    restore_value: no
+    initial_value: '0'
 
 # Touch sensor setup
 esp32_touch:
@@ -113,7 +126,7 @@ display:
 
       if (now.is_valid()) {
         // Digital time at the top
-        it.strftime(120, 5, id(time_font), Color::WHITE, TextAlign::TOP_CENTER, "%H:%M", now);
+        it.strftime(120, 5, id(time_font), Color(120,235,120), TextAlign::TOP_CENTER, "%H:%M", now);
 
         // Weather Information
         int y_start = 100;
@@ -122,6 +135,16 @@ display:
         // Temperature (left/right aligned with icons)
         if (id(outdoor_temperature).has_state() && id(feels_like_temperature).has_state()) {
           int ty = y_start;
+          // color thresholds helper lambdas
+          auto color_for_temp = [](float t) -> Color {
+            if (t > 100) return Color(255, 50, 50);   // very red
+            if (t > 90)  return Color(255, 90, 90);   // mostly red
+            if (t > 85)  return Color(255, 140, 140); // more red
+            if (t > 80)  return Color(255, 190, 190); // slight red
+            return Color::WHITE;
+          };
+          Color temp_color_left  = color_for_temp(id(outdoor_temperature).state);
+          Color temp_color_right = color_for_temp(id(feels_like_temperature).state);
 
           // Left: Actual temperature, thermometer icon
           int left_icon_x = 26;   // left margin for icon
@@ -129,7 +152,7 @@ display:
           it.line(left_icon_x, ty - 6, left_icon_x, ty + 4, Color::WHITE); // tube
           it.rectangle(left_icon_x - 2, ty - 10, 4, 12, Color::WHITE);
           // Font sizes available: tiny, small, medium, large, giant
-          it.printf(left_icon_x + 14, ty, id(medium_font), Color::WHITE, TextAlign::CENTER_LEFT, "%.1f°", id(outdoor_temperature).state);
+          it.printf(left_icon_x + 14, ty, id(medium_font), temp_color_left, TextAlign::CENTER_LEFT, "%.1f°", id(outdoor_temperature).state);
 
           // Right: Feels like, sun with rays (icon centered with number)
           int right_icon_x = 142;                      // right margin for icon
@@ -143,7 +166,7 @@ display:
             int y2 = ty + (int)(8 * sin(a));
             it.line(x1, y1, x2, y2, Color::WHITE);
           }
-          it.printf(right_icon_x + 14, ty, id(medium_font), Color::WHITE, TextAlign::CENTER_LEFT, "%.1f°", id(feels_like_temperature).state);
+          it.printf(right_icon_x + 14, ty, id(medium_font), temp_color_right, TextAlign::CENTER_LEFT, "%.1f°", id(feels_like_temperature).state);
         }
 
         // Wind
@@ -156,10 +179,13 @@ display:
           it.line(speed_icon_x + 2, wy,     speed_icon_x + 12, wy,     Color::WHITE);
           it.line(speed_icon_x,     wy + 5, speed_icon_x + 10, wy + 5, Color::WHITE);
           // columns for values and units (fixed x to avoid overlap with variable digit widths)
-          int speed_val_x = 45;   // bring value close to icon
-          int speed_mph_x = 65;   // mph right after value
-          it.printf(speed_val_x, wy, id(medium_font), Color::WHITE, TextAlign::CENTER_LEFT, "%.0f", id(wind_speed).state);
-          it.printf(speed_mph_x, wy+2, id(tiny_font),   Color::WHITE, TextAlign::CENTER_LEFT, "mph");
+          int speed_val_x = 43;   // value start near icon
+          char spd_buf[8];
+          snprintf(spd_buf, sizeof(spd_buf), "%.0f", id(wind_speed).state);
+          it.printf(speed_val_x, wy, id(medium_font), Color::WHITE, TextAlign::CENTER_LEFT, "%s", spd_buf);
+          int spd_len = (int)strlen(spd_buf);
+          int speed_mph_x = speed_val_x + spd_len * 14 + 2; // ~14px per digit for medium font
+          it.printf(speed_mph_x, wy+2, id(tiny_font), Color::WHITE, TextAlign::CENTER_LEFT, "mph");
 
           // gust icon: small flag
           int gx = 118;           // gust icon start
@@ -167,17 +193,20 @@ display:
           it.line(gx, wy - 6, gx + 10, wy - 2, Color::WHITE);
           it.line(gx + 10, wy - 2, gx, wy + 2, Color::WHITE);
           it.line(gx, wy + 2, gx, wy - 6, Color::WHITE);
-          int gust_val_x = 137;   // bring value close to flag icon
-          int gust_mph_x = 157;   // mph right after value
-          it.printf(gust_val_x, wy, id(medium_font), Color::WHITE, TextAlign::CENTER_LEFT, "%.0f", id(wind_gust).state);
-          it.printf(gust_mph_x, wy+2, id(tiny_font),   Color::WHITE, TextAlign::CENTER_LEFT, "mph");
+          int gust_val_x = 135;   // value start near flag icon
+          char gst_buf[8];
+          snprintf(gst_buf, sizeof(gst_buf), "%.0f", id(wind_gust).state);
+          it.printf(gust_val_x, wy, id(medium_font), Color::WHITE, TextAlign::CENTER_LEFT, "%s", gst_buf);
+          int gst_len = (int)strlen(gst_buf);
+          int gust_mph_x = gust_val_x + gst_len * 14 + 2; // ~14px per digit
+          it.printf(gust_mph_x, wy+2, id(tiny_font), Color::WHITE, TextAlign::CENTER_LEFT, "mph");
 
           // Draw wind flow arrow (sensor reports FROM direction; arrow shows TO/flow)
           float dir_from_deg = id(wind_direction).state;
           float flow_deg = fmodf(dir_from_deg + 180.0f, 360.0f);  // flip 180° to get flow direction
           float ang = (flow_deg - 90.0f) * M_PI / 180.0f;         // screen coordinates adjustment
 
-          int center_x = 200;     // minor nudge
+          int center_x = 206;     // minor nudge
           int center_y = y_start + line_height;
           // Draw surrounding circle like a compass
           int compass_r = 13;     // slightly larger
@@ -196,8 +225,16 @@ display:
           int rx = bx - (int)((head_w/2.0f) * -sin(ang));
           int ry = by - (int)((head_w/2.0f) *  cos(ang));
           it.filled_triangle(end_x, end_y, lx, ly, rx, ry, Color::WHITE);
-          // arrow shaft from center to base of the triangle for a longer line
-          it.line(center_x, center_y, bx, by, Color::WHITE);
+          // Thicker, much longer arrow shaft trailing from the triangle base
+          float nx = -sin(ang); // unit normal for thickness offsets
+          float ny =  cos(ang);
+          // aim tail to near the opposite edge of the compass circle
+          int tail_end_x = center_x - (int)((compass_r - 1) * cos(ang));
+          int tail_end_y = center_y - (int)((compass_r - 1) * sin(ang));
+          // draw 5 parallel lines (approx 5px thick)
+          for (int o = -2; o <= 2; o++) {
+            it.line(bx + (int)(nx*o), by + (int)(ny*o), tail_end_x + (int)(nx*o), tail_end_y + (int)(ny*o), Color::WHITE);
+          }
         }
 
         // Humidity
@@ -206,29 +243,47 @@ display:
           int bar_height = 20;
           int bar_y = y_start + 2 * line_height - (bar_height/2);
           float percentage = id(humidity).state / 100.0;
+          auto color_for_hum = [](float h) -> Color {
+            if (h > 80) return Color(80, 160, 255);   // very blue
+            if (h > 65) return Color(120, 180, 255);  // more blue
+            if (h > 50) return Color(160, 200, 255);  // slight blue
+            return Color::WHITE;
+          };
+          Color hum_color = color_for_hum(id(humidity).state);
           // icon
           int icon_cx = 28;
           int icon_cy = bar_y + bar_height/2;
           it.filled_circle(icon_cx, icon_cy + 2, 6, Color::WHITE);
           it.filled_triangle(icon_cx, icon_cy - 8, icon_cx - 5, icon_cy + 1, icon_cx + 5, icon_cy + 1, Color::WHITE);
           // percent value at far right
-          int pct_x = 222; // right margin anchor
-          it.printf(pct_x, y_start + 2 * line_height, id(medium_font), Color::WHITE, TextAlign::CENTER_RIGHT, "%.0f%%", id(humidity).state);
+          int pct_x = 224; // right margin anchor
+          it.printf(pct_x, y_start + 2 * line_height, id(medium_font), hum_color, TextAlign::CENTER_RIGHT, "%.0f%%", id(humidity).state);
           // bar spans from left of center to just before percent
           int bar_x = 48;
           int bar_right = 160;
           int bar_width = bar_right - bar_x;
           it.rectangle(bar_x, bar_y, bar_width, bar_height, Color::WHITE);
-          it.filled_rectangle(bar_x, bar_y, (int)(bar_width * percentage), bar_height, Color::WHITE);
+          it.filled_rectangle(bar_x, bar_y, (int)(bar_width * percentage), bar_height, hum_color);
         }
 
       } else {
         it.printf(120, 120, id(roboto_font), Color::WHITE, TextAlign::CENTER, "Waiting for time...");
       }
 
-      // Optional message at the bottom
-      if (id(display_message).has_state() && !id(display_message).state.empty()) {
-        it.printf(120, 220, id(small_font), Color(200, 200, 200), TextAlign::CENTER, "%s", id(display_message).state.c_str());
+      // Scrolling forecast marquee at the bottom
+      {
+        // If no forecast yet, show nothing
+        if (id(forecast_msg).size() > 0) {
+          int y = 216; // baseline near bottom
+          // draw shadow for readability
+          it.printf(id(forecast_scroll_x)+1, y+1, id(medium_font), Color(0,0,0), TextAlign::CENTER_LEFT, "%s", id(forecast_msg).c_str());
+          it.printf(id(forecast_scroll_x),   y,   id(medium_font), Color(200,140,50), TextAlign::CENTER_LEFT, "%s", id(forecast_msg).c_str());
+        }
+        // Advance scroll position every frame
+        id(forecast_scroll_x) -= 4;
+        if (id(forecast_scroll_x) < -id(forecast_px_len)) {
+          id(forecast_scroll_x) = 240; // reset to right edge
+        }
       }
 
 # Fonts
@@ -244,8 +299,8 @@ font:
     size: 11
   - file: "gfonts://Roboto"
     id: medium_font
-    size: 28
-  - file: "gfonts://Roboto@700"
+    size: 30
+  - file: "gfonts://Orbitron@700"
     id: time_font
     size: 64
 
@@ -271,6 +326,47 @@ text_sensor:
     on_value:
       then:
         - component.update: lcd_display
+  # Forecast entities from Home Assistant (set the entity_ids to match your sensors)
+  - platform: homeassistant
+    id: forecast_high
+    entity_id: sensor.pirate_weather_today_s_high
+    on_value:
+      then:
+        - lambda: |-
+            // Rebuild the forecast string when any piece changes
+            std::string high = id(forecast_high).has_state() ? id(forecast_high).state.c_str() : "?";
+            std::string low  = id(forecast_low).has_state() ? id(forecast_low).state.c_str()  : "?";
+            std::string cond = id(forecast_tomorrow_condition).has_state() ? id(forecast_tomorrow_condition).state.c_str() : "?";
+            id(forecast_msg) = "High: " + high + "  Low: " + low + "  Tomorrow: " + cond;
+            id(forecast_scroll_x) = 240;
+            id(forecast_px_len) = (int) (id(forecast_msg).length() * 8);  // approx 8px per char for small font
+            id(lcd_display).update();
+  - platform: homeassistant
+    id: forecast_low
+    entity_id: sensor.pirate_weather_today_s_low
+    on_value:
+      then:
+        - lambda: |-
+            std::string high = id(forecast_high).has_state() ? id(forecast_high).state.c_str() : "?";
+            std::string low  = id(forecast_low).has_state() ? id(forecast_low).state.c_str()  : "?";
+            std::string cond = id(forecast_tomorrow_condition).has_state() ? id(forecast_tomorrow_condition).state.c_str() : "?";
+            id(forecast_msg) = "High: " + high + "  Low: " + low + "  Tomorrow: " + cond;
+            id(forecast_scroll_x) = 240;
+            id(forecast_px_len) = (int) (id(forecast_msg).length() * 8);
+            id(lcd_display).update();
+  - platform: homeassistant
+    id: forecast_tomorrow_condition
+    entity_id: sensor.pirate_weather_tomorrow_s_condition
+    on_value:
+      then:
+        - lambda: |-
+            std::string high = id(forecast_high).has_state() ? id(forecast_high).state.c_str() : "?";
+            std::string low  = id(forecast_low).has_state() ? id(forecast_low).state.c_str()  : "?";
+            std::string cond = id(forecast_tomorrow_condition).has_state() ? id(forecast_tomorrow_condition).state.c_str() : "?";
+            id(forecast_msg) = "High: " + high + "  Low: " + low + "  Tomorrow: " + cond;
+            id(forecast_scroll_x) = 240;
+            id(forecast_px_len) = (int) (id(forecast_msg).length() * 8);
+            id(lcd_display).update();
 
 sensor:
   - platform: homeassistant
