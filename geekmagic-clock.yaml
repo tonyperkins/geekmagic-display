@@ -78,7 +78,16 @@ binary_sensor:
     id: touch_btn
     pin: GPIO32
     threshold: 1250
-    on_press:
+    on_multi_click:
+    # Long click toggles the backlight
+    - timing:
+        - ON for at least 500ms
+      then:
+        - light.toggle: back_light
+
+    # Short click cycles brightness
+    - timing:
+        - ON for at most 499ms
       then:
         - lambda: |-
             // Cycle brightness index 0..3
@@ -316,6 +325,12 @@ time:
       - seconds: /1
         then:
           - component.update: lcd_display
+      - at:
+          hour: 22
+          minute: 30
+          second: 0
+        then:
+          - light.turn_off: back_light
 
 # Text sensor to receive messages from Home Assistant
 text_sensor:

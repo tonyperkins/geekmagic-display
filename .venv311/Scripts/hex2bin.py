@@ -1,4 +1,4 @@
-#!C:\Users\perki\CascadeProjects\geekmagic-display\.venv311\Scripts\python.exe
+#!C:\Users\perki\CascadeProjects\esphome-projects\geekmagic-display\.venv311\Scripts\python.exe
 
 # Copyright (c) 2005-2018 Alexander Belchenko
 # All rights reserved.

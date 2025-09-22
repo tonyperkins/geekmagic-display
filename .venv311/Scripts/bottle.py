@@ -1,4 +1,4 @@
-#!C:\Users\perki\CascadeProjects\geekmagic-display\.venv311\Scripts\python.exe
+#!C:\Users\perki\CascadeProjects\esphome-projects\geekmagic-display\.venv311\Scripts\python.exe
 # -*- coding: utf-8 -*-
 from __future__ import print_function
 """

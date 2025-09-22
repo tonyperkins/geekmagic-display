@@ -35,7 +35,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="C:\Users\perki\CascadeProjects\geekmagic-display\.venv311"
+VIRTUAL_ENV="C:\Users\perki\CascadeProjects\esphome-projects\geekmagic-display\.venv311"
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"
