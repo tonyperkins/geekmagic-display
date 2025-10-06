@@ -1,13 +1,55 @@
+# Configuration parameters
+substitutions:
+  # Set to 'true' to enable automated presence detection and brightness control
+  # Set to 'false' to disable automation (display always on, manual brightness only)
+  enable_automation: 'true'
+
 esphome:
   name: geekmagic-clock
   friendly_name: GeekMagic Clock
   on_boot:
     then:
-      - delay: 1s
-      - light.turn_on:
-          id: back_light
-          brightness: 70%
-      - component.update: lcd_display
+      - delay: 2s  # Give time for Home Assistant connection
+      - if:
+          condition:
+            lambda: 'return std::string("${enable_automation}") == "true" && id(office_occupancy).state;'
+          then:
+            # Only turn on display if office is occupied with appropriate brightness
+            - light.turn_on:
+                id: back_light
+                brightness: !lambda |-
+                  if (id(brightness_mode) == 0) {
+                    // Auto mode - use illuminance
+                    if (id(office_illuminance).has_state()) {
+                      float lux = id(office_illuminance).state;
+                      if (lux < 200) return 0.15f;        // 15% for < 200 lx
+                      else if (lux < 400) return 0.20f;   // 20% for 200-400 lx
+                      else if (lux < 600) return 0.30f;   // 30% for 400-600 lx
+                      else return 0.40f;                  // 40% for > 600 lx
+                    } else {
+                      return 0.20f;  // Default if no illuminance data
+                    }
+                  } else {
+                    // Manual mode
+                    switch (id(brightness_mode)) {
+                      case 1: return 0.15f;  // 15%
+                      case 2: return 0.25f;  // 25%
+                      case 3: return 0.50f;  // 50%
+                      case 4: return 1.0f;   // 100%
+                      default: return 0.20f;
+                    }
+                  }
+            - component.update: lcd_display
+          else:
+            # Automation disabled - turn on display at default brightness
+            - if:
+                condition:
+                  lambda: 'return std::string("${enable_automation}") == "false";'
+                then:
+                  - light.turn_on:
+                      id: back_light
+                      brightness: 0.25
+                  - component.update: lcd_display
 
 esp32:
   board: esp32dev
@@ -68,40 +110,123 @@ globals:
     type: int
     restore_value: no
     initial_value: '0'
+  # Manual brightness override mode (0 = auto, 1-4 = manual levels)
+  - id: brightness_mode
+    type: int
+    restore_value: yes
+    initial_value: '0'
 
 # Touch sensor setup
 esp32_touch:
 
 binary_sensor:
+  # Office occupancy sensor from Home Assistant
+  - platform: homeassistant
+    name: "Office Occupancy"
+    id: office_occupancy
+    entity_id: binary_sensor.everything_presence_one_278be8_occupancy
+    on_state:
+      then:
+        # Only respond to occupancy changes if automation is enabled
+        - if:
+            condition:
+              lambda: 'return std::string("${enable_automation}") == "true";'
+            then:
+              - if:
+                  condition:
+                    binary_sensor.is_on: office_occupancy
+                  then:
+                    # Turn on display when occupancy detected with appropriate brightness
+                    - light.turn_on:
+                        id: back_light
+                        brightness: !lambda |-
+                          if (id(brightness_mode) == 0) {
+                            // Auto mode - use illuminance
+                            if (id(office_illuminance).has_state()) {
+                              float lux = id(office_illuminance).state;
+                              if (lux < 200) return 0.15f;        // 15% for < 200 lx
+                              else if (lux < 400) return 0.20f;   // 20% for 200-400 lx
+                              else if (lux < 600) return 0.30f;   // 30% for 400-600 lx
+                              else return 0.40f;                  // 40% for > 600 lx
+                            } else {
+                              return 0.20f;  // Default if no illuminance data
+                            }
+                          } else {
+                            // Manual mode
+                            switch (id(brightness_mode)) {
+                              case 1: return 0.15f;  // 15%
+                              case 2: return 0.25f;  // 25%
+                              case 3: return 0.50f;  // 50%
+                              case 4: return 1.0f;   // 100%
+                              default: return 0.20f;
+                            }
+                          }
+                    - component.update: lcd_display
+                  else:
+                    # Turn off display when occupancy clear
+                    - light.turn_off: back_light
+
   - platform: esp32_touch
     name: "Touch Button"
     id: touch_btn
     pin: GPIO32
     threshold: 1250
     on_multi_click:
-    # Long click toggles the backlight
+    # Long click toggles the backlight (only if occupancy detected when automation enabled)
     - timing:
         - ON for at least 500ms
       then:
-        - light.toggle: back_light
+        - if:
+            condition:
+              lambda: |-
+                if (std::string("${enable_automation}") == "true") {
+                  return id(office_occupancy).state;
+                } else {
+                  return true;  // Always allow toggle when automation disabled
+                }
+            then:
+              - light.toggle: back_light
 
-    # Short click cycles brightness
+    # Short click cycles brightness (only if light is on, and occupancy detected if automation enabled)
     - timing:
         - ON for at most 499ms
       then:
-        - lambda: |-
-            // Cycle brightness index 0..3
-            id(bright_idx) = (id(bright_idx) + 1) & 0x3;
-            float b = 1.0f;
-            switch (id(bright_idx)) {
-              case 0: b = 0.15f; break;
-              case 1: b = 0.35f; break;
-              case 2: b = 0.65f; break;
-              default: b = 1.0f; break;
-            }
-            auto call = id(back_light).turn_on();
-            call.set_brightness(b);
-            call.perform();
+        - if:
+            condition:
+              lambda: |-
+                if (std::string("${enable_automation}") == "true") {
+                  return id(office_occupancy).state && id(back_light).current_values.is_on();
+                } else {
+                  return id(back_light).current_values.is_on();
+                }
+            then:
+              - lambda: |-
+                  // Cycle brightness mode: 0=auto, 1-4=manual levels
+                  id(brightness_mode) = (id(brightness_mode) + 1) % 5;
+                  float b = 0.20f;  // default
+                  
+                  if (id(brightness_mode) == 0) {
+                    // Auto mode - use illuminance
+                    if (id(office_illuminance).has_state()) {
+                      float lux = id(office_illuminance).state;
+                      if (lux < 200) b = 0.15f;        // 15% for < 200 lx
+                      else if (lux < 400) b = 0.20f;   // 20% for 200-400 lx
+                      else if (lux < 600) b = 0.30f;   // 30% for 400-600 lx
+                      else b = 0.40f;                  // 40% for > 600 lx
+                    }
+                  } else {
+                    // Manual mode
+                    switch (id(brightness_mode)) {
+                      case 1: b = 0.15f; break;  // 15%
+                      case 2: b = 0.25f; break;  // 25%
+                      case 3: b = 0.50f; break;  // 50%
+                      case 4: b = 1.0f; break;   // 100%
+                    }
+                  }
+                  
+                  auto call = id(back_light).turn_on();
+                  call.set_brightness(b);
+                  call.perform();
 
 # SPI configuration for your actual hardware
 spi:
@@ -135,7 +260,7 @@ display:
 
       if (now.is_valid()) {
         // Digital time at the top
-        it.strftime(120, 5, id(time_font), Color(120,235,120), TextAlign::TOP_CENTER, "%H:%M", now);
+        it.strftime(120, 0, id(time_font), Color(120,235,120), TextAlign::TOP_CENTER, "%H:%M", now);
 
         // Weather Information
         int y_start = 100;
@@ -156,15 +281,15 @@ display:
           Color temp_color_right = color_for_temp(id(feels_like_temperature).state);
 
           // Left: Actual temperature, thermometer icon
-          int left_icon_x = 26;   // left margin for icon
+          int left_icon_x = 24;   // left margin for icon
           it.filled_circle(left_icon_x, ty + 6, 4, Color::WHITE);   // bulb
           it.line(left_icon_x, ty - 6, left_icon_x, ty + 4, Color::WHITE); // tube
           it.rectangle(left_icon_x - 2, ty - 10, 4, 12, Color::WHITE);
           // Font sizes available: tiny, small, medium, large, giant
-          it.printf(left_icon_x + 14, ty, id(medium_font), temp_color_left, TextAlign::CENTER_LEFT, "%.1f°", id(outdoor_temperature).state);
+          it.printf(left_icon_x + 10, ty, id(medium_font), temp_color_left, TextAlign::CENTER_LEFT, "%.1f°", id(outdoor_temperature).state);
 
           // Right: Feels like, sun with rays (icon centered with number)
-          int right_icon_x = 142;                      // right margin for icon
+          int right_icon_x = 135;                      // right margin for icon
           int sun_cx = right_icon_x - 4;              // icon centered with value
           it.circle(sun_cx, ty + 1, 4, Color::WHITE);  // align icon vertically with text
           for (int i = 0; i < 8; i++) {
@@ -175,7 +300,7 @@ display:
             int y2 = ty + (int)(8 * sin(a));
             it.line(x1, y1, x2, y2, Color::WHITE);
           }
-          it.printf(right_icon_x + 14, ty, id(medium_font), temp_color_right, TextAlign::CENTER_LEFT, "%.1f°", id(feels_like_temperature).state);
+          it.printf(right_icon_x + 10, ty, id(medium_font), temp_color_right, TextAlign::CENTER_LEFT, "%.1f°", id(feels_like_temperature).state);
         }
 
         // Wind
@@ -210,46 +335,42 @@ display:
           int gust_mph_x = gust_val_x + gst_len * 14 + 2; // ~14px per digit
           it.printf(gust_mph_x, wy+2, id(tiny_font), Color::WHITE, TextAlign::CENTER_LEFT, "mph");
 
-          // Draw wind flow arrow (sensor reports FROM direction; arrow shows TO/flow)
+          // Draw wind direction arrowhead (sensor reports FROM direction)
+          // Place arrowhead at compass position where wind is coming FROM
+          // Point the arrow in the direction the wind is flowing TO
           float dir_from_deg = id(wind_direction).state;
-          float flow_deg = fmodf(dir_from_deg + 180.0f, 360.0f);  // flip 180° to get flow direction
-          float ang = (flow_deg - 90.0f) * M_PI / 180.0f;         // screen coordinates adjustment
+          float from_ang = (dir_from_deg - 90.0f) * M_PI / 180.0f;  // FROM direction in screen coordinates
+          float flow_ang = (dir_from_deg + 90.0f) * M_PI / 180.0f;  // TO direction (180° opposite)
 
-          int center_x = 206;     // minor nudge
+          int center_x = 206;
           int center_y = y_start + line_height;
           // Draw surrounding circle like a compass
-          int compass_r = 13;     // slightly larger
+          int compass_r = 13;
           it.circle(center_x, center_y, compass_r, Color::WHITE);
 
-          // Solid triangular pointer inside the circle
-          int radius = 13;               // where the tip should be
-          int end_x = center_x + (int)(radius * cos(ang));
-          int end_y = center_y + (int)(radius * sin(ang));
+          // Position arrowhead at the compass edge where wind is FROM
+          int radius = 13;
+          int arrow_base_x = center_x + (int)(radius * cos(from_ang));
+          int arrow_base_y = center_y + (int)(radius * sin(from_ang));
+          
+          // Draw triangular arrowhead pointing toward flow direction
           int head_len = 9;
-          int head_w   = 9;
-          int bx = end_x - (int)(head_len * cos(ang));
-          int by = end_y - (int)(head_len * sin(ang));
-          int lx = bx + (int)((head_w/2.0f) * -sin(ang));
-          int ly = by + (int)((head_w/2.0f) *  cos(ang));
-          int rx = bx - (int)((head_w/2.0f) * -sin(ang));
-          int ry = by - (int)((head_w/2.0f) *  cos(ang));
-          it.filled_triangle(end_x, end_y, lx, ly, rx, ry, Color::WHITE);
-          // Thicker, much longer arrow shaft trailing from the triangle base
-          float nx = -sin(ang); // unit normal for thickness offsets
-          float ny =  cos(ang);
-          // aim tail to near the opposite edge of the compass circle
-          int tail_end_x = center_x - (int)((compass_r - 1) * cos(ang));
-          int tail_end_y = center_y - (int)((compass_r - 1) * sin(ang));
-          // draw 5 parallel lines (approx 5px thick)
-          for (int o = -2; o <= 2; o++) {
-            it.line(bx + (int)(nx*o), by + (int)(ny*o), tail_end_x + (int)(nx*o), tail_end_y + (int)(ny*o), Color::WHITE);
-          }
+          int head_w = 9;
+          // Tip points inward toward center (flow direction)
+          int tip_x = arrow_base_x + (int)(head_len * cos(flow_ang));
+          int tip_y = arrow_base_y + (int)(head_len * sin(flow_ang));
+          // Base corners perpendicular to flow direction
+          int lx = arrow_base_x + (int)((head_w/2.0f) * -sin(flow_ang));
+          int ly = arrow_base_y + (int)((head_w/2.0f) *  cos(flow_ang));
+          int rx = arrow_base_x - (int)((head_w/2.0f) * -sin(flow_ang));
+          int ry = arrow_base_y - (int)((head_w/2.0f) *  cos(flow_ang));
+          it.filled_triangle(tip_x, tip_y, lx, ly, rx, ry, Color::WHITE);
         }
 
         // Humidity
         if (id(humidity).has_state()) {
           // Full-width humidity row: icon (left), wide bar (middle), percent (right)
-          int bar_height = 20;
+          int bar_height = 10;
           int bar_y = y_start + 2 * line_height - (bar_height/2);
           float percentage = id(humidity).state / 100.0;
           auto color_for_hum = [](float h) -> Color {
@@ -283,7 +404,7 @@ display:
       {
         // If no forecast yet, show nothing
         if (id(forecast_msg).size() > 0) {
-          int y = 216; // baseline near bottom
+          int y = 214; // baseline near bottom
           // draw shadow for readability
           it.printf(id(forecast_scroll_x)+1, y+1, id(medium_font), Color(0,0,0), TextAlign::CENTER_LEFT, "%s", id(forecast_msg).c_str());
           it.printf(id(forecast_scroll_x),   y,   id(medium_font), Color(200,140,50), TextAlign::CENTER_LEFT, "%s", id(forecast_msg).c_str());
@@ -330,7 +451,12 @@ time:
           minute: 30
           second: 0
         then:
-          - light.turn_off: back_light
+          # Only turn off at night if automation enabled and office is not occupied
+          - if:
+              condition:
+                lambda: 'return std::string("${enable_automation}") == "true" && !id(office_occupancy).state;'
+              then:
+                - light.turn_off: back_light
 
 # Text sensor to receive messages from Home Assistant
 text_sensor:
@@ -420,3 +546,27 @@ sensor:
     on_value:
       then:
         - component.update: lcd_display
+  - platform: homeassistant
+    id: office_illuminance
+    name: "Office Illuminance"
+    entity_id: sensor.everything_presence_one_278be8_illuminance
+    on_value:
+      then:
+        # Update display brightness based on illuminance when in auto mode and automation enabled
+        - if:
+            condition:
+              lambda: |-
+                if (std::string("${enable_automation}") == "true") {
+                  return id(office_occupancy).state && id(back_light).current_values.is_on() && id(brightness_mode) == 0;
+                } else {
+                  return id(back_light).current_values.is_on() && id(brightness_mode) == 0;
+                }
+            then:
+              - light.turn_on:
+                  id: back_light
+                  brightness: !lambda |-
+                    float lux = id(office_illuminance).state;
+                    if (lux < 200) return 0.20f;        // 20% for < 200 lx
+                    else if (lux < 400) return 0.25f;   // 25% for 200-400 lx
+                    else if (lux < 600) return 0.30f;   // 30% for 400-600 lx
+                    else return 0.40f;                  // 40% for > 600 lx
