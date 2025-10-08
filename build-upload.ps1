@@ -1,27 +1,59 @@
 # Build and OTA upload ESPHome project using a Python 3.11 venv
 # Usage:
-#   ./build-upload.ps1 [path-to-yaml] [--device <host-or-ip>] [-Clean] [-UploadAndMonitor] [-SyncToHA] [-HAPath \\HA\config\esphome] [-HAFilename name.yaml]
+#   ./build-upload.ps1 [-Config <clock|8266>] [--device <host-or-ip>] [-Clean] [-UploadAndMonitor] [-SyncToHA] [-HAPath \\HA\config\esphome] [-HAFilename name.yaml]
 # Examples:
-#   ./build-upload.ps1                 # builds & uploads geekmagic-clock.yaml (no clean), then syncs to HA as geekmagic-clock.yaml
-#   ./build-upload.ps1 geekmagic-clock.yaml -Device 192.168.50.134   # explicit device
-#   ./build-upload.ps1 geekmagic-clock.yaml -HAPath \\homeassistant\config\esphome
+#   ./build-upload.ps1                 # builds & uploads geekmagic-clock.yaml (default)
+#   ./build-upload.ps1 -Config 8266    # builds & uploads geekmagic-8266.yaml
+#   ./build-upload.ps1 -Config clock -Device 192.168.50.134   # explicit device
+#   ./build-upload.ps1 geekmagic-clock.yaml  # explicit yaml path (legacy)
+#   ./build-upload.ps1 -Config 8266 -HAPath \\homeassistant\config\esphome
 #   ./build-upload.ps1 -SyncOnly       # Skips build/upload, only syncs the YAML to HA
 #   ./build-upload.ps1 -Clean          # Performs a clean before building
 #   ./build-upload.ps1 -UploadAndMonitor   # Upload only (skips compile step here) and then attach logs
 
 param(
-  [string]$Yaml = "geekmagic-clock.yaml",
+  [Parameter(Position=0)]
+  [string]$Yaml = "",
+  [ValidateSet('clock', '8266', 'minimal', '')]
+  [string]$Config = "",
   [string]$Device = "",
   [Alias('S')][string[]]$Secrets = @(),
   [switch]$SyncToHA,
   [string]$HAPath = "\\homeassistant\config\esphome",
-  [string]$HAFilename = "geekmagic-clock.yaml",
+  [string]$HAFilename = "",
   [switch]$SyncOnly,
   [switch]$Clean,
   [switch]$UploadAndMonitor
 )
 
 $ErrorActionPreference = "Stop"
+
+# Determine which YAML file to use based on Config parameter
+if ([string]::IsNullOrWhiteSpace($Yaml)) {
+  # No explicit YAML provided, use Config parameter
+  switch ($Config) {
+    '8266' { 
+      $Yaml = "geekmagic-8266.yaml"
+      if ([string]::IsNullOrWhiteSpace($HAFilename)) { $HAFilename = "geekmagic-8266.yaml" }
+    }
+    'clock' { 
+      $Yaml = "geekmagic-clock.yaml"
+      if ([string]::IsNullOrWhiteSpace($HAFilename)) { $HAFilename = "geekmagic-clock.yaml" }
+    }
+    default { 
+      # Default to clock if no config specified
+      $Yaml = "geekmagic-clock.yaml"
+      if ([string]::IsNullOrWhiteSpace($HAFilename)) { $HAFilename = "geekmagic-clock.yaml" }
+    }
+  }
+} else {
+  # Explicit YAML path provided (legacy mode)
+  if ([string]::IsNullOrWhiteSpace($HAFilename)) { 
+    $HAFilename = [IO.Path]::GetFileName($Yaml)
+  }
+}
+
+Write-Host "Building configuration: $Yaml" -ForegroundColor Cyan
 
 # Defaults requested: if SyncToHA not provided, enable it by default
 if (-not $PSBoundParameters.ContainsKey('SyncToHA')) { $SyncToHA = $true }
